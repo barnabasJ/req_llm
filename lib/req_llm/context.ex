@@ -720,6 +720,19 @@ defmodule ReqLLM.Context do
     end
   end
 
+  # Convert a plain map or ContentPart struct to a proper ContentPart.
+  # Handles maps from Jido Thread like %{type: :thinking, thinking: "..."} or %{type: :text, text: "..."}.
+  defp to_content_part(%ContentPart{} = part), do: part
+  defp to_content_part(%{type: :thinking, thinking: text}), do: ContentPart.thinking(text)
+  defp to_content_part(%{type: :thinking, text: text}), do: ContentPart.thinking(text)
+  defp to_content_part(%{type: :text, text: text}), do: ContentPart.text(text)
+  defp to_content_part(%{type: :image_url, url: url}), do: ContentPart.image_url(url)
+
+  defp to_content_part(%{type: :image, data: data} = part),
+    do: ContentPart.image(data, Map.get(part, :media_type, "image/png"))
+
+  defp to_content_part(text) when is_binary(text), do: ContentPart.text(text)
+
   defp normalize_tool_calls(nil), do: nil
   defp normalize_tool_calls([]), do: nil
 
@@ -863,6 +876,15 @@ defmodule ReqLLM.Context do
     else
       {:ok, tool_result(id, content)}
     end
+  end
+
+  # Handle messages with content block lists (e.g., thinking + text from Jido Thread).
+  # Converts plain maps like %{type: :thinking, thinking: "..."} to ContentPart structs.
+  defp convert_loose_map(%{role: role, content: content} = msg)
+       when is_atom(role) and is_list(content) do
+    parts = Enum.map(content, &to_content_part/1)
+    tool_calls = Map.get(msg, :tool_calls) |> normalize_tool_calls()
+    {:ok, %Message{role: role, content: parts, tool_calls: tool_calls}}
   end
 
   defp convert_loose_map(%{role: role, content: content})
