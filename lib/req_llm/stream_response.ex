@@ -375,12 +375,16 @@ defmodule ReqLLM.StreamResponse do
   - All callbacks are optional - omitted callbacks are simply not invoked
   - The returned Response struct contains all accumulated data plus metadata
   """
-  @spec process_stream(t(), keyword()) :: {:ok, Response.t()} | {:error, term()}
+  @spec process_stream(stream_response :: t(), opts :: keyword()) ::
+          {:ok, Response.t()} | {:error, term()}
   def process_stream(%__MODULE__{} = stream_response, opts \\ []) do
     callbacks = extract_callbacks(opts)
 
     chunks = process_stream_with_callbacks(stream_response.stream, callbacks)
     metadata = MetadataHandle.await(stream_response.metadata_handle)
+
+    # Release the Finch connection and terminate StreamServer
+    safe_cancel(stream_response)
 
     case metadata do
       %{error: reason} ->
@@ -397,9 +401,13 @@ defmodule ReqLLM.StreamResponse do
         )
     end
   rescue
-    error -> {:error, error}
+    error ->
+      safe_cancel(stream_response)
+      {:error, error}
   catch
-    :exit, reason -> {:error, reason}
+    :exit, reason ->
+      safe_cancel(stream_response)
+      {:error, reason}
   end
 
   # Process stream chunks, invoking callbacks and collecting chunks
@@ -432,6 +440,18 @@ defmodule ReqLLM.StreamResponse do
       on_tool_call: Keyword.get(opts, :on_tool_call)
     }
   end
+
+  # Safely cancel the stream, releasing the Finch connection and terminating StreamServer.
+  # Swallows errors (e.g., StreamServer already stopped) to avoid masking the original error.
+  defp safe_cancel(%__MODULE__{cancel: cancel}) when is_function(cancel, 0) do
+    cancel.()
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_cancel(_), do: :ok
 
   @doc """
   Await the metadata task and return usage statistics.
