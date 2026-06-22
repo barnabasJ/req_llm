@@ -521,7 +521,7 @@ defmodule ReqLLM.Providers.GoogleVertex do
     # Clean thinking after translation if incompatible
     other_opts =
       if function_exported?(formatter, :maybe_clean_thinking_after_translation, 2) do
-        formatter.maybe_clean_thinking_after_translation(other_opts, operation)
+        apply(formatter, :maybe_clean_thinking_after_translation, [other_opts, operation])
       else
         other_opts
       end
@@ -648,7 +648,7 @@ defmodule ReqLLM.Providers.GoogleVertex do
         formatter = get_formatter(model)
 
         if function_exported?(formatter, :pre_validate_options, 3) do
-          formatter.pre_validate_options(operation, model, opts)
+          apply(formatter, :pre_validate_options, [operation, model, opts])
         else
           {opts, []}
         end
@@ -751,7 +751,7 @@ defmodule ReqLLM.Providers.GoogleVertex do
     # Delegate SSE parsing to formatter
     # For Anthropic models, Vertex uses standard Anthropic SSE format
     if function_exported?(formatter, :decode_stream_event, 2) do
-      formatter.decode_stream_event(event, model)
+      apply(formatter, :decode_stream_event, [event, model])
     else
       # Fall back to Anthropic's stream decoder for models using that format
       ReqLLM.Providers.Anthropic.Response.decode_stream_event(event, model)

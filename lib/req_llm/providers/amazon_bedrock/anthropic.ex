@@ -145,23 +145,20 @@ defmodule ReqLLM.Providers.AmazonBedrock.Anthropic do
 
     model = LLMDB.Model.new!(%{id: model_id, provider: :anthropic})
 
-    case Anthropic.Response.decode_response(body, model) do
-      {:ok, response} ->
-        input_context = opts[:context] || %ReqLLM.Context{messages: []}
-        merged_response = ReqLLM.Context.merge_response(input_context, response)
+    # decode_response/2 always returns {:ok, _} for a map body (the {:error, _}
+    # clause is only reached for a non-map, which the is_map/1 guard excludes).
+    {:ok, response} = Anthropic.Response.decode_response(body, model)
+    input_context = opts[:context] || %ReqLLM.Context{messages: []}
+    merged_response = ReqLLM.Context.merge_response(input_context, response)
 
-        final_response =
-          if opts[:operation] == :object do
-            AdapterHelpers.extract_and_set_object(merged_response)
-          else
-            merged_response
-          end
+    final_response =
+      if opts[:operation] == :object do
+        AdapterHelpers.extract_and_set_object(merged_response)
+      else
+        merged_response
+      end
 
-        {:ok, final_response}
-
-      error ->
-        error
-    end
+    {:ok, final_response}
   end
 
   @doc """

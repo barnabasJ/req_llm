@@ -941,12 +941,11 @@ defmodule ReqLLM.Context do
 
   defp validate_message_structure(messages) do
     Enum.reduce_while(messages, :ok, fn msg, :ok ->
+      # `content` is a non-nullable list in the Message schema, so a structurally
+      # valid message always has list content — no separate is_list check needed.
       cond do
         not Message.valid?(msg) ->
           {:halt, {:error, "Context contains invalid messages"}}
-
-        not is_list(msg.content) ->
-          {:halt, {:error, "Message content must be a list of ContentParts"}}
 
         msg.role == :assistant and msg.tool_calls != nil and not is_list(msg.tool_calls) ->
           {:halt, {:error, "tool_calls must be a list or nil"}}

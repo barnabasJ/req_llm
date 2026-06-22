@@ -360,14 +360,13 @@ defmodule ReqLLM.Providers.AmazonBedrock.Converse do
     |> Enum.reverse()
   end
 
+  # Only ever called with list content (the caller guards with is_list/1).
   defp all_tool_results?(content) when is_list(content) do
     Enum.all?(content, fn
       %{"toolResult" => _} -> true
       _ -> false
     end)
   end
-
-  defp all_tool_results?(_), do: false
 
   defp add_tools(request, [], _formatter_module), do: request
 
@@ -524,14 +523,12 @@ defmodule ReqLLM.Providers.AmazonBedrock.Converse do
     }
   end
 
-  # Regular message (user, assistant, system)
+  # Regular message (user, assistant). System messages are split out before
+  # encoding and tool messages are handled by the `role: :tool` clause above,
+  # so `role` here is always :user | :assistant — the roles Converse accepts.
   defp encode_message(%Message{role: role, content: content}) do
-    # Converse API only accepts "user" or "assistant" roles
-    # Tool results must be wrapped in a "user" message
-    normalized_role = if role == :tool, do: :user, else: role
-
     %{
-      "role" => Atom.to_string(normalized_role),
+      "role" => Atom.to_string(role),
       "content" => encode_content(content)
     }
   end

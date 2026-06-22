@@ -321,19 +321,13 @@ defmodule ReqLLM.Providers.AmazonBedrock.AWSEventStream do
       fn
         {buffer, pid} ->
           receive do
-            {_ref, {:data, chunk}} when is_binary(chunk) ->
+            # The first element is a wildcard, so this matches both the simple
+            # {ref, _} shape and Finch's {{pool, pid}, _} :into :self shape.
+            {_tag, {:data, chunk}} when is_binary(chunk) ->
               handle_chunk(buffer, chunk, pid, process_event)
 
-            {{_pool, _pid}, {:data, chunk}} when is_binary(chunk) ->
-              # Finch format when using :into :self
-              handle_chunk(buffer, chunk, pid, process_event)
-
-            {_ref, :done} ->
+            {_tag, :done} ->
               # Stream is done
-              {:halt, buffer}
-
-            {{_pool, _pid}, :done} ->
-              # Finch format for done signal
               {:halt, buffer}
 
             _ ->

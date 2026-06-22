@@ -1203,16 +1203,14 @@ defmodule ReqLLM.Providers.XAI do
     end)
   end
 
-  @dialyzer {:nowarn_function, parse_json_defensively: 1}
-  @spec parse_json_defensively(term()) :: map() | nil
+  # Only ever called with a binary (the caller guards with is_binary/1).
+  @spec parse_json_defensively(binary()) :: map() | nil
   defp parse_json_defensively(text) when is_binary(text) do
     case Jason.decode(text) do
       {:ok, parsed_object} when is_map(parsed_object) -> parsed_object
       _ -> nil
     end
   end
-
-  defp parse_json_defensively(_), do: nil
 
   defp merge_response_with_context(req, response) do
     context = req.options[:context] || %ReqLLM.Context{messages: []}

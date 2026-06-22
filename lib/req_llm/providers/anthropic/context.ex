@@ -95,14 +95,13 @@ defmodule ReqLLM.Providers.Anthropic.Context do
     |> Enum.reverse()
   end
 
+  # Only ever called with list content (the caller guards with is_list/1).
   defp all_tool_results?(content) when is_list(content) do
     Enum.all?(content, fn
       %{type: "tool_result"} -> true
       _ -> false
     end)
   end
-
-  defp all_tool_results?(_), do: false
 
   defp encode_message(%ReqLLM.Message{
          role: :assistant,
@@ -150,10 +149,10 @@ defmodule ReqLLM.Providers.Anthropic.Context do
   end
 
   defp encode_message(%ReqLLM.Message{role: role, content: content}) do
-    normalized_role = if role == :tool, do: :user, else: role
-
+    # Tool messages are fully handled by the `role: :tool` clause above, so
+    # `role` here is always :user | :assistant | :system.
     %{
-      role: to_string(normalized_role),
+      role: to_string(role),
       content: encode_content(content)
     }
   end

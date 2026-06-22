@@ -237,13 +237,12 @@ defmodule ReqLLM.Schema do
   # Private helper functions
 
   @doc false
-  @spec zoi_schema?(any()) :: boolean()
+  # Only ever called with a struct (both callers guard with is_struct/1).
+  @spec zoi_schema?(struct()) :: boolean()
   defp zoi_schema?(value) when is_struct(value) do
     module_name = value.__struct__ |> Module.split() |> List.first()
     module_name == "Zoi"
   end
-
-  defp zoi_schema?(_), do: false
 
   @doc false
   @spec schema_kind(any()) :: :nimble | :json | :zoi | :unknown

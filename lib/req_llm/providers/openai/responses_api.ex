@@ -852,6 +852,7 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
     end
   end
 
+  # Only ever called with a list (the caller guards with is_list/1).
   defp encode_tool_outputs(outputs) when is_list(outputs) do
     Enum.map(outputs, fn output ->
       call_id = output[:call_id] || output["call_id"]
@@ -871,8 +872,6 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
       }
     end)
   end
-
-  defp encode_tool_outputs(_), do: []
 
   defp encode_tool_calls_as_function_calls(tool_calls) do
     Enum.map(tool_calls, fn tc ->

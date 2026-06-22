@@ -378,7 +378,7 @@ defmodule ReqLLM.Providers.AmazonBedrock do
         # Otherwise use Converse formatter directly
         formatter =
           if function_exported?(family_formatter, :requires_converse_api?, 0) and
-               family_formatter.requires_converse_api?() do
+               apply(family_formatter, :requires_converse_api?, []) do
             family_formatter
           else
             ReqLLM.Providers.AmazonBedrock.Converse
@@ -539,7 +539,7 @@ defmodule ReqLLM.Providers.AmazonBedrock do
         # Otherwise use Converse formatter directly
         formatter =
           if function_exported?(family_formatter, :requires_converse_api?, 0) and
-               family_formatter.requires_converse_api?() do
+               apply(family_formatter, :requires_converse_api?, []) do
             family_formatter
           else
             ReqLLM.Providers.AmazonBedrock.Converse
@@ -710,7 +710,7 @@ defmodule ReqLLM.Providers.AmazonBedrock do
     formatter = get_formatter_module(model_family)
 
     if function_exported?(formatter, :extract_usage, 2) do
-      formatter.extract_usage(body, model)
+      apply(formatter, :extract_usage, [body, model])
     else
       {:error, :no_usage_extractor}
     end
@@ -826,7 +826,6 @@ defmodule ReqLLM.Providers.AmazonBedrock do
   defp extract_region(aws_creds) do
     case aws_creds do
       %{region: r} when is_binary(r) -> r
-      %AWSAuth.Credentials{region: r} when is_binary(r) -> r
       _ -> "us-east-1"
     end
   end
@@ -1102,7 +1101,7 @@ defmodule ReqLLM.Providers.AmazonBedrock do
     else
       parsed_body = ensure_parsed_body(resp.body)
       model_family = req.options[:model_family]
-      formatter = Map.get(@embedding_families, model_family)
+      formatter = Map.fetch!(@embedding_families, model_family)
 
       case formatter.parse_embedding_response(parsed_body) do
         {:ok, normalized_response} ->
@@ -1189,7 +1188,7 @@ defmodule ReqLLM.Providers.AmazonBedrock do
 
     requires_converse =
       function_exported?(formatter, :requires_converse_api?, 0) &&
-        formatter.requires_converse_api?()
+        apply(formatter, :requires_converse_api?, [])
 
     # Check if formatter is Converse (fallback for unsupported families)
     is_fallback_to_converse = formatter == ReqLLM.Providers.AmazonBedrock.Converse

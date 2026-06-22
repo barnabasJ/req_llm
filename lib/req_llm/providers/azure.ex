@@ -717,9 +717,9 @@ defmodule ReqLLM.Providers.Azure do
     formatter = get_formatter(model_id, model)
 
     if function_exported?(formatter, :decode_stream_event, 3) do
-      formatter.decode_stream_event(event, model, state)
+      apply(formatter, :decode_stream_event, [event, model, state])
     else
-      chunks = formatter.decode_stream_event(event, model)
+      chunks = apply(formatter, :decode_stream_event, [event, model])
       {chunks, state}
     end
   end
@@ -735,7 +735,7 @@ defmodule ReqLLM.Providers.Azure do
     formatter = get_formatter(model_id, model)
 
     if function_exported?(formatter, :extract_usage, 2) do
-      formatter.extract_usage(body, model)
+      apply(formatter, :extract_usage, [body, model])
     else
       {:error, :no_usage_extractor}
     end
@@ -780,7 +780,7 @@ defmodule ReqLLM.Providers.Azure do
     formatter = get_formatter(model_id, model)
 
     if function_exported?(formatter, :pre_validate_options, 3) do
-      formatter.pre_validate_options(operation, model, opts)
+      apply(formatter, :pre_validate_options, [operation, model, opts])
     else
       {opts, []}
     end
