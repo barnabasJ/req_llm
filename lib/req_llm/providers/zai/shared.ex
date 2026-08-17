@@ -296,7 +296,13 @@ defmodule ReqLLM.Providers.Zai.Shared do
     }
   end
 
-  defp encode_zai_message(%ReqLLM.Message{role: r, content: c, tool_calls: tc}) do
+  defp encode_zai_message(%ReqLLM.Message{
+         role: r,
+         content: c,
+         tool_calls: tc,
+         tool_call_id: tool_call_id,
+         name: name
+       }) do
     {tool_call_parts, other_content} =
       c
       |> normalize_content_parts()
@@ -318,11 +324,16 @@ defmodule ReqLLM.Providers.Zai.Shared do
         calls -> Map.put(base_message, :tool_calls, calls)
       end
 
-    case tc do
-      nil -> base_message
-      [] -> base_message
-      calls -> Map.put(base_message, :tool_calls, calls)
-    end
+    base_message =
+      case tc do
+        nil -> base_message
+        [] -> base_message
+        calls -> Map.put(base_message, :tool_calls, calls)
+      end
+
+    base_message
+    |> Utils.maybe_put(:tool_call_id, tool_call_id)
+    |> Utils.maybe_put(:name, name)
   end
 
   defp normalize_content_parts(content) when is_list(content), do: content
