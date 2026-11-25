@@ -247,6 +247,12 @@ defmodule ReqLLM.Streaming.FinchClient do
         acc
     end
 
+    deadline = Keyword.get(stream_opts, :total_timeout_deadline, :infinity)
+
+    wire = fn request, finch, acc, callback, opts ->
+      stream_with_connection_pool(request, finch, acc, callback, opts, deadline)
+    end
+
     try do
       case Retry.stream(
              finch_request,
@@ -254,7 +260,7 @@ defmodule ReqLLM.Streaming.FinchClient do
              :ok,
              finch_stream_callback,
              stream_opts,
-             &stream_with_connection_pool/5
+             wire
            ) do
         {:ok, _} ->
           :ok
@@ -322,7 +328,7 @@ defmodule ReqLLM.Streaming.FinchClient do
     end
   end
 
-  defp stream_with_connection_pool(request, finch_name, acc, callback, opts) do
+  defp stream_with_connection_pool(request, finch_name, acc, callback, opts, deadline) do
     {pool_options, private} = Map.pop(request.private, :req_llm_pool_options)
 
     opts =
@@ -333,7 +339,13 @@ defmodule ReqLLM.Streaming.FinchClient do
         opts
       end
 
-    Finch.stream(%{request | private: private}, finch_name, acc, callback, opts)
+    case ReqLLM.TimeoutBudget.clamp_options(opts, deadline) do
+      {:ok, bounded_opts} ->
+        Finch.stream(%{request | private: private}, finch_name, acc, callback, bounded_opts)
+
+      {:error, reason} ->
+        {:error, reason, acc}
+    end
   end
 
   defp ensure_connection_pool(finch_name, pool, pool_options) do
@@ -373,7 +385,9 @@ defmodule ReqLLM.Streaming.FinchClient do
       receive_timeout: receive_timeout,
       max_retries: Keyword.get(opts, :max_retries, 3)
     ]
+    |> maybe_put_option(:on_response_status, Keyword.get(opts, :on_response_status))
     |> maybe_put_option(:request_timeout, Keyword.get(opts, :request_timeout))
+    |> Keyword.put(:total_timeout_deadline, Keyword.get(opts, :total_timeout_deadline, :infinity))
     |> maybe_put_option(:pool_strategy, pool_strategy(opts))
   end
 

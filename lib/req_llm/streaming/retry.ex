@@ -42,21 +42,27 @@ defmodule ReqLLM.Streaming.Retry do
         stream_opts: stream_opts,
         stream_fun: stream_fun,
         max_retries: max_retries,
-        on_retry: Keyword.get(opts, :on_retry)
+        on_retry: Keyword.get(opts, :on_retry),
+        on_response_status: response_status_observer(opts),
+        deadline: Keyword.get(opts, :total_timeout_deadline, :infinity)
       },
       0
     )
   end
 
+  defp response_status_observer(opts) do
+    schema = ReqLLM.Provider.Options.generation_subset_schema([:on_response_status])
+
+    NimbleOptions.validate!(Keyword.take(opts, [:on_response_status]), schema)[
+      :on_response_status
+    ]
+  end
+
   defp do_stream(
          %{
-           request: request,
-           finch_name: finch_name,
            acc: acc,
            callback: callback,
-           stream_opts: stream_opts,
-           stream_fun: stream_fun,
-           max_retries: max_retries
+           stream_opts: stream_opts
          } = params,
          attempt
        ) do
@@ -68,10 +74,39 @@ defmodule ReqLLM.Streaming.Retry do
       error_body: []
     }
 
-    wrapped_callback = fn event, wrapped_acc -> apply_callback(event, wrapped_acc, callback) end
+    wrapped_callback = fn event, wrapped_acc ->
+      case event do
+        {:status, status} -> ReqLLM.ResponseStatus.notify(params.on_response_status, status)
+        _ -> :ok
+      end
+
+      apply_callback(event, wrapped_acc, callback)
+    end
 
     started_at = System.monotonic_time()
 
+    case ReqLLM.TimeoutBudget.clamp_options(stream_opts, params.deadline) do
+      {:ok, bounded_opts} ->
+        run_wire_attempt(params, attempt, initial_acc, wrapped_callback, bounded_opts, started_at)
+
+      {:error, reason} ->
+        {:error, reason, acc}
+    end
+  end
+
+  defp run_wire_attempt(
+         %{
+           request: request,
+           finch_name: finch_name,
+           stream_fun: stream_fun,
+           max_retries: max_retries
+         } = params,
+         attempt,
+         initial_acc,
+         wrapped_callback,
+         stream_opts,
+         started_at
+       ) do
     case stream_fun.(request, finch_name, initial_acc, wrapped_callback, stream_opts) do
       {:ok, %{status: status} = state} when is_integer(status) and status >= 400 ->
         handle_http_failure(params, attempt, :rate_limited, state, started_at)
@@ -117,14 +152,19 @@ defmodule ReqLLM.Streaming.Retry do
        ) do
     case classify_error(reason, state) do
       {:retry, delay_ms} ->
-        log_retry(reason, attempt + 1, max_retries, delay_ms, state.status)
-        emit_retry(params, attempt, max_retries, delay_ms, state.status, started_at)
+        case ReqLLM.TimeoutBudget.retry_delay(params.deadline, delay_ms) do
+          {:ok, bounded_delay} ->
+            log_retry(reason, attempt + 1, max_retries, bounded_delay, state.status)
+            emit_retry(params, attempt, max_retries, bounded_delay, state.status, started_at)
 
-        if delay_ms > 0 do
-          Process.sleep(delay_ms)
+            case ReqLLM.TimeoutBudget.wait(params.deadline, bounded_delay) do
+              :ok -> do_stream(params, attempt + 1)
+              {:error, reason} -> {:error, reason, callback_acc}
+            end
+
+          {:error, reason} ->
+            {:error, reason, callback_acc}
         end
-
-        do_stream(params, attempt + 1)
 
       :no_retry ->
         {:error, reason, callback_acc}

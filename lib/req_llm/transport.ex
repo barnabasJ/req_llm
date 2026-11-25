@@ -29,6 +29,56 @@ defmodule ReqLLM.Transport do
 
   @spec run(Req.Request.t()) :: {Req.Request.t(), Req.Response.t() | Exception.t()}
   def run(%Req.Request{} = request) do
+    deadline = ReqLLM.TimeoutBudget.request_deadline(request)
+
+    result =
+      if deadline == :infinity,
+        do: run_adapter(request),
+        else: run_bounded_adapter(request, deadline)
+
+    case result do
+      {_request, %Req.Response{status: status}} ->
+        ReqLLM.ResponseStatus.notify(
+          Req.Request.get_private(request, :req_llm_response_status_observer),
+          status
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
+  end
+
+  defp run_bounded_adapter(request, deadline) do
+    timeout_keys = [:pool_timeout, :receive_timeout, :request_timeout]
+    finch_options = ReqLLM.Provider.Defaults.finch_option(request)[:finch]
+
+    options =
+      request.options
+      |> Map.to_list()
+      |> Keyword.put_new(:receive_timeout, 15_000)
+      |> Keyword.merge(Keyword.take(finch_options, timeout_keys))
+
+    case ReqLLM.TimeoutBudget.clamp_options(options, deadline) do
+      {:ok, options} ->
+        bounded = Keyword.take(options, timeout_keys)
+        request = Req.Request.merge_options(request, options)
+
+        request =
+          Req.Request.merge_options(
+            request,
+            ReqLLM.Provider.Defaults.finch_option(request, bounded)
+          )
+
+        run_adapter(request)
+
+      {:error, reason} ->
+        {request, reason}
+    end
+  end
+
+  defp run_adapter(request) do
     case Req.Request.get_private(request, @adapter_key) do
       adapter when is_function(adapter, 1) -> adapter.(request)
       adapter when is_atom(adapter) -> adapter.run(request)

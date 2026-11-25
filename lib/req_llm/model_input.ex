@@ -2,8 +2,20 @@ defmodule ReqLLM.ModelInput do
   @moduledoc false
 
   @ambiguous_keys %{
-    chat: [:stream, :stream_transport, :defer_http_events_until_telemetry?, :on_finch_request],
-    object: [:stream, :stream_transport, :defer_http_events_until_telemetry?, :on_finch_request],
+    chat: [
+      :stream,
+      :stream_transport,
+      :defer_http_events_until_telemetry?,
+      :on_finch_request,
+      :on_response_status
+    ],
+    object: [
+      :stream,
+      :stream_transport,
+      :defer_http_events_until_telemetry?,
+      :on_finch_request,
+      :on_response_status
+    ],
     rerank: [:query, :documents]
   }
 

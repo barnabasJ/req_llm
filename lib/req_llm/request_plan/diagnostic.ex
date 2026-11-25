@@ -16,6 +16,7 @@ defmodule ReqLLM.RequestPlan.Diagnostic do
     :oauth_file,
     :oauth_http_options,
     :on_finch_request,
+    :on_response_status,
     :req_http_options,
     :text
   ]

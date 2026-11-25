@@ -199,8 +199,12 @@ metadata-wait budgets. The earliest applicable timeout wins.
 
 An opt-in deadline for one ReqLLM model call. It includes provider requests,
 retry attempts and retry delays, sequential rerank batches, and streamed
-responses. A finite total timeout prevents internal work from extending a call
-past the caller's budget.
+responses. For text and object generation, the relative provider-I/O budget
+starts on a cache miss, after model resolution, context normalization and cache
+lookup. Request preparation consumes this budget but is not interrupted while
+running. The request owner, HTTP attempts and retry waits use the same cutoff.
+This is not a wall-clock limit on every phase of the public generation call;
+cache hits return without opening a provider request.
 
 ```elixir
 config :req_llm, total_timeout: 180_000
@@ -211,6 +215,44 @@ ReqLLM.stream_text(model, messages, total_timeout: 120_000)
 
 Set `total_timeout: :infinity` to disable the total deadline. Omitting the
 option preserves ReqLLM 1.x's unlimited total-call behavior.
+
+### `total_deadline_at` (per-call text/object generation)
+
+Pass an absolute Unix-millisecond cutoff when several calls share an existing
+budget. Calculate it once and carry it through those calls. ReqLLM converts it
+once to a monotonic deadline; the earlier of this cutoff and `total_timeout`
+applies to provider I/O, retries and retry delays.
+
+```elixir
+deadline_at = System.system_time(:millisecond) + 30_000
+
+ReqLLM.generate_text(model, messages, total_deadline_at: deadline_at)
+```
+
+Model resolution, context normalization and cache lookup run before this cutoff
+is checked. Cache hits are not cancelled. Preparation consumes the remaining
+budget but is not interrupted. An expired cutoff prevents a new HTTP attempt;
+a finite nonstream request also releases its I/O task if its caller dies.
+
+### `on_response_status` (per-call text/object generation)
+
+A transient, nonblocking observer receives `%{status: integer()}` for each actual
+HTTP response, including responses that are retried. It receives no headers,
+request content or response body. Observer exceptions, throws and exits are
+ignored so instrumentation cannot change the request result.
+
+```elixir
+owner = self()
+
+ReqLLM.generate_text(model, messages,
+  on_response_status: fn %{status: status} ->
+    send(owner, {:model_http_status, status})
+  end
+)
+```
+
+Keep the observer short and nonblocking. Cache hits, transport failures without
+an HTTP response, and non-HTTP transports do not synthesize a status event.
 
 ### `connect_timeout` (WebSocket default: 10,000ms)
 

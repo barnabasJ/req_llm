@@ -258,10 +258,20 @@ defmodule ReqLLM.Provider.Options do
                                  doc:
                                    "Timeout for receiving provider data in milliseconds, or :infinity"
                                ],
+                               total_deadline_at: [
+                                 type: :pos_integer,
+                                 doc:
+                                   "Absolute Unix-millisecond provider-I/O cutoff, including retries. The earlier of this and total_timeout applies. Checked after model/context/cache work; cache hits are not cancelled. Preparation consumes the budget but is not interrupted."
+                               ],
+                               on_response_status: [
+                                 type: {:fun, 1},
+                                 doc:
+                                   "Transient per-request observer receiving %{status: integer()} for each actual HTTP response. Receives no body or headers. Exceptions, throws and exits are ignored; keep it nonblocking."
+                               ],
                                total_timeout: [
                                  type: {:or, [:pos_integer, {:in, [:infinity]}]},
                                  doc:
-                                   "Optional total model-call timeout in milliseconds, including retries"
+                                   "Provider-I/O budget in milliseconds, including retries. Starts on cache miss after model/context/cache work. Preparation consumes the budget but is not interrupted."
                                ],
                                stream_idle_timeout: [
                                  type: {:or, [:pos_integer, {:in, [:infinity]}]},
@@ -278,6 +288,7 @@ defmodule ReqLLM.Provider.Options do
 
   # Internal keys that bypass validation (framework concerns)
   @internal_keys [
+    :total_timeout_deadline,
     :pricing_context,
     :api_key,
     :access_token,

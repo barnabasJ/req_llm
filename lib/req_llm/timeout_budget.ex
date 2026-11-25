@@ -25,18 +25,85 @@ defmodule ReqLLM.TimeoutBudget do
 
   @spec deadline(keyword()) :: deadline()
   def deadline(opts) do
-    case total_timeout(opts) do
-      :infinity -> :infinity
-      timeout -> %{timeout: timeout, expires_at: now() + timeout}
+    timeout = total_timeout(opts)
+    monotonic_now = now()
+    schema = ReqLLM.Provider.Options.generation_subset_schema([:total_deadline_at])
+    validated = NimbleOptions.validate!(Keyword.take(opts, [:total_deadline_at]), schema)
+
+    case Keyword.fetch(validated, :total_deadline_at) do
+      {:ok, absolute} ->
+        remaining = max(absolute - System.system_time(:millisecond), 0)
+        budget = if timeout == :infinity, do: remaining, else: min(timeout, remaining)
+        %{timeout: max(budget, 1), expires_at: monotonic_now + budget}
+
+      :error when timeout == :infinity ->
+        :infinity
+
+      :error ->
+        %{timeout: timeout, expires_at: monotonic_now + timeout}
     end
   end
 
   @spec remaining(deadline()) :: budget_timeout() | 0
   def remaining(:infinity), do: :infinity
 
-  def remaining(%{expires_at: expires_at}) do
-    max(expires_at - now(), 0)
+  def remaining(%{expires_at: expires_at} = deadline) do
+    max(expires_at - clock_now(deadline), 0)
   end
+
+  @doc false
+  def clamp_options(options, :infinity), do: {:ok, options}
+
+  def clamp_options(options, deadline) do
+    case remaining(deadline) do
+      0 ->
+        {:error, error(:total, deadline.timeout)}
+
+      budget ->
+        {:ok,
+         Enum.reduce([:pool_timeout, :receive_timeout, :request_timeout], options, fn key, opts ->
+           Keyword.update(opts, key, budget, &clamp_timeout(&1, budget))
+         end)}
+    end
+  end
+
+  @doc false
+  def retry_delay(:infinity, delay), do: {:ok, delay}
+
+  def retry_delay(deadline, delay) do
+    case remaining(deadline) do
+      0 -> {:error, error(:total, deadline.timeout)}
+      budget -> {:ok, min(delay, budget)}
+    end
+  end
+
+  @doc false
+  def wait(deadline, delay) do
+    with {:ok, bounded} <- retry_delay(deadline, delay) do
+      clock_sleep(deadline, bounded)
+
+      case retry_delay(deadline, 0) do
+        {:ok, _} -> :ok
+        error -> error
+      end
+    end
+  end
+
+  @doc false
+  def request_deadline(request),
+    do: Req.Request.get_private(request, :req_llm_timeout_deadline, :infinity)
+
+  defp clamp_timeout(:infinity, budget), do: budget
+  defp clamp_timeout(timeout, budget) when is_integer(timeout), do: min(timeout, budget)
+  defp clamp_timeout(timeout, _budget), do: timeout
+
+  # The optional capability belongs to the transient internal deadline, not model
+  # configuration. Tests supply a clock without sleeping or changing global time.
+  defp clock_now(%{clock: {module, context}}), do: module.now(context)
+  defp clock_now(_deadline), do: now()
+  defp clock_sleep(%{clock: {module, context}}, delay), do: module.sleep(context, delay)
+  defp clock_sleep(_deadline, 0), do: :ok
+  defp clock_sleep(_deadline, delay), do: Process.sleep(delay)
 
   @spec error(:total | :stream_idle, pos_integer()) :: Timeout.t()
   def error(kind, timeout) do
@@ -45,6 +112,17 @@ defmodule ReqLLM.TimeoutBudget do
 
   @spec request(Req.Request.t(), deadline()) ::
           {:ok, Req.Response.t()} | {:error, Exception.t()}
+  @spec request(Req.Request.t(), deadline(), keyword()) ::
+          {:ok, Req.Response.t()} | {:error, Exception.t()}
+  def request(request, deadline, opts) do
+    schema = ReqLLM.Provider.Options.generation_subset_schema([:on_response_status])
+    validated = NimbleOptions.validate!(Keyword.take(opts, [:on_response_status]), schema)
+
+    request
+    |> Req.Request.put_private(:req_llm_response_status_observer, validated[:on_response_status])
+    |> request(deadline)
+  end
+
   def request(%Req.Request{} = request, :infinity) do
     request |> ReqLLM.Transport.attach() |> Req.request()
   end
@@ -55,6 +133,7 @@ defmodule ReqLLM.TimeoutBudget do
     request =
       request
       |> ReqLLM.Transport.attach()
+      |> Req.Request.put_private(:req_llm_timeout_deadline, deadline)
       |> Req.Request.put_private(@capture_key, %{owner: self(), ref: capture_ref})
       |> Req.Request.append_request_steps(
         llm_timeout_capture: &__MODULE__.capture_request_context/1
@@ -64,9 +143,9 @@ defmodule ReqLLM.TimeoutBudget do
       0 ->
         timeout_result(request, capture_ref, timeout)
 
-      remaining ->
+      _remaining ->
         request
-        |> run_request_task(remaining)
+        |> run_request_task(deadline)
         |> resolve_request_task(request, capture_ref, timeout)
     end
   end
@@ -101,9 +180,35 @@ defmodule ReqLLM.TimeoutBudget do
           )
   end
 
-  defp run_request_task(request, timeout) do
-    task = Task.Supervisor.async_nolink(ReqLLM.TaskSupervisor, fn -> Req.request(request) end)
-    {task, Task.yield(task, timeout)}
+  defp run_request_task(request, deadline) do
+    owner = self()
+
+    task =
+      Task.Supervisor.async_nolink(ReqLLM.TaskSupervisor, fn ->
+        request_pid = self()
+
+        {:ok, _guardian} =
+          Task.Supervisor.start_child(ReqLLM.TaskSupervisor, fn ->
+            watch_request_owner(owner, request_pid)
+          end)
+
+        Req.request(request)
+      end)
+
+    {task, Task.yield(task, remaining(deadline))}
+  end
+
+  defp watch_request_owner(owner, request_pid) do
+    owner_ref = Process.monitor(owner)
+    request_ref = Process.monitor(request_pid)
+
+    receive do
+      {:DOWN, ^owner_ref, :process, ^owner, _reason} ->
+        Process.exit(request_pid, :kill)
+
+      {:DOWN, ^request_ref, :process, ^request_pid, _reason} ->
+        :ok
+    end
   end
 
   defp resolve_request_task({_task, {:ok, result}}, _request, capture_ref, _timeout) do

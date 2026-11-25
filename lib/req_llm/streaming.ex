@@ -69,7 +69,9 @@ defmodule ReqLLM.Streaming do
   ## Options
 
     * `:receive_timeout` - Provider transport inactivity timeout in milliseconds
-    * `:total_timeout` - Optional total model-call timeout, including retries
+    * `:total_deadline_at` - Absolute Unix-millisecond provider-I/O cutoff; the earlier of this and `:total_timeout` applies. Model resolution, context normalization and cache lookup run before the cutoff is checked. Cache hits are not cancelled. Preparation consumes the remaining budget but is not interrupted.
+    * `:on_response_status` - Transient, nonblocking observer receiving only `%{status: integer()}` for actual HTTP responses; no event is synthesized for cache hits or non-HTTP transports
+    * `:total_timeout` - Provider-I/O budget in milliseconds, including retries; preparation consumes the budget but is not interrupted
     * `:stream_idle_timeout` - Optional timeout between semantic stream updates
     * `:metadata_timeout` - Maximum metadata inactivity in milliseconds, or `:infinity`
     * `:fixture_path` - Path for test fixture capture (testing only)
@@ -109,9 +111,16 @@ defmodule ReqLLM.Streaming do
           {:ok, StreamResponse.t()} | {:error, term()}
   def start_stream(provider_mod, model, context, opts \\ []) do
     transport = stream_transport(provider_mod, model, opts)
-    total_timeout = ReqLLM.TimeoutBudget.total_timeout(opts)
     total_timeout_deadline = ReqLLM.TimeoutBudget.deadline(opts)
+
+    total_timeout =
+      case total_timeout_deadline do
+        :infinity -> :infinity
+        deadline -> deadline.timeout
+      end
+
     stream_idle_timeout = ReqLLM.TimeoutBudget.stream_idle_timeout(opts)
+    opts = Keyword.put(opts, :total_timeout_deadline, total_timeout_deadline)
 
     with :ok <- ReqLLM.ProviderFileReference.validate_context(context, model.provider),
          {:ok, server_pid} <-

@@ -59,7 +59,9 @@ defmodule ReqLLM.Generation do
       most once after an invalid complete structured output
     * `:system_prompt` - System prompt to prepend
     * `:receive_timeout` - Provider-transport inactivity timeout in milliseconds
-    * `:total_timeout` - Optional whole-call deadline in milliseconds, including retries
+    * `:total_deadline_at` - Absolute Unix-millisecond provider-I/O cutoff; the earlier of this and `:total_timeout` applies. Model resolution, context normalization and cache lookup run before the cutoff is checked. Cache hits are not cancelled. Preparation consumes the remaining budget but is not interrupted.
+    * `:on_response_status` - Transient, nonblocking observer receiving only `%{status: integer()}` for actual HTTP responses; no event is synthesized for cache hits or non-HTTP transports
+    * `:total_timeout` - Provider-I/O budget in milliseconds, including retries. Starts on cache miss after model/context/cache work; preparation consumes the budget but is not interrupted.
     * `:stream_idle_timeout` - Optional semantic-progress timeout for streaming calls
     * `:provider_options` - Provider-specific options
     * `:routing_context` - Opaque application data for a `ReqLLM.Router`
@@ -332,7 +334,9 @@ defmodule ReqLLM.Generation do
     * `:frequency_penalty` - Penalize new tokens based on frequency
     * `:system_prompt` - System prompt to prepend
     * `:receive_timeout` - Provider-transport inactivity timeout in milliseconds
-    * `:total_timeout` - Optional whole-call deadline in milliseconds, including retries
+    * `:total_deadline_at` - Absolute Unix-millisecond provider-I/O cutoff; the earlier of this and `:total_timeout` applies. Model resolution, context normalization and cache lookup run before the cutoff is checked. Cache hits are not cancelled. Preparation consumes the remaining budget but is not interrupted.
+    * `:on_response_status` - Transient, nonblocking observer receiving only `%{status: integer()}` for actual HTTP responses; no event is synthesized for cache hits or non-HTTP transports
+    * `:total_timeout` - Provider-I/O budget in milliseconds, including retries. Starts on cache miss after model/context/cache work; preparation consumes the budget but is not interrupted.
     * `:stream_idle_timeout` - Optional semantic-progress timeout for streaming calls
     * `:provider_options` - Provider-specific options
     * `:routing_context` - Opaque application data for a `ReqLLM.Router`
@@ -501,7 +505,8 @@ defmodule ReqLLM.Generation do
                :req_llm_pricing_context,
                request_opts[:pricing_context]
              ),
-             deadline
+             deadline,
+             request_opts
            ) do
       {:ok, ReqLLM.Cache.store(cache_ref, decoded_response, cache_opts)}
     else
@@ -543,7 +548,8 @@ defmodule ReqLLM.Generation do
                :req_llm_pricing_context,
                request_opts[:pricing_context]
              ),
-             deadline
+             deadline,
+             request_opts
            ) do
       response =
         if ReqLLM.ModelHelpers.json_strict?(model) do

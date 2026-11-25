@@ -140,6 +140,17 @@ defmodule ReqLLM.Step.Retry do
   def should_retry?(_request, _response_or_exception), do: false
 
   defp retry(request, delay, http_status) do
+    deadline = ReqLLM.TimeoutBudget.request_deadline(request)
+    retry_count = Req.Request.get_private(request, :req_retry_count, 0)
+    delay = delay || backoff(retry_count)
+
+    case ReqLLM.TimeoutBudget.retry_delay(deadline, delay) do
+      {:ok, bounded_delay} -> retry_with_delay(request, bounded_delay, http_status)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp retry_with_delay(request, delay, http_status) do
     retry_count = Req.Request.get_private(request, :req_retry_count, 0)
     max_retries = Req.Request.get_option(request, :max_retries, 3)
     started_at = Req.Request.get_private(request, :req_llm_attempt_started_at)
