@@ -450,6 +450,97 @@ defmodule ReqLLM.RequestBudgetTest do
     assert :ok == Task.await(server)
   end
 
+  @tag :integration
+  test "LM Studio keeps its finite deadline at the transport boundary and reports actual status" do
+    owner = self()
+
+    body =
+      "data: " <>
+        Jason.encode!(%{
+          id: "synthetic",
+          object: "chat.completion.chunk",
+          model: "local-model",
+          choices: [
+            %{index: 0, delta: %{role: "assistant", content: "hello"}, finish_reason: nil}
+          ]
+        }) <>
+        "\n\ndata: [DONE]\n\n"
+
+    {port, server} = http_server(200, "text/event-stream", body)
+    absolute = System.system_time(:millisecond) + 5_000
+
+    model =
+      ReqLLM.model!(%{
+        provider: :lmstudio,
+        id: "local-model",
+        provider_model_id: "publisher/model@q4:local",
+        capabilities: %{chat: true, tools: %{enabled: true}}
+      })
+
+    assert {:ok, response} =
+             ReqLLM.stream_text(model, "synthetic prompt",
+               base_url: "http://127.0.0.1:#{port}/v1",
+               total_deadline_at: absolute,
+               on_response_status: fn fact -> send(owner, {:http_fact, fact}) end,
+               max_retries: 0
+             )
+
+    assert ReqLLM.StreamResponse.text(response) == "hello"
+    assert_receive {:http_fact, %{status: 200}}
+    assert :ok == Task.await(server)
+  end
+
+  @tag :integration
+  test "LM Studio finite cutoff cancels HTTP I/O waiting for stream body" do
+    owner = self()
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_ip, port}} = :inet.sockname(listener)
+
+    server =
+      Task.async(fn ->
+        try do
+          {:ok, socket} = :gen_tcp.accept(listener, 2_000)
+          {:ok, _request} = :gen_tcp.recv(socket, 0, 2_000)
+
+          :ok =
+            :gen_tcp.send(
+              socket,
+              "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n"
+            )
+
+          send(owner, :lmstudio_wire_opened)
+          result = :gen_tcp.recv(socket, 0, 2_000)
+          :gen_tcp.close(socket)
+          result
+        after
+          :gen_tcp.close(listener)
+        end
+      end)
+
+    model =
+      ReqLLM.model!(%{
+        provider: :lmstudio,
+        id: "local-model",
+        capabilities: %{chat: true, tools: %{enabled: true}}
+      })
+
+    absolute = System.system_time(:millisecond) + 200
+
+    assert {:ok, response} =
+             ReqLLM.stream_text(model, "synthetic prompt",
+               base_url: "http://127.0.0.1:#{port}/v1",
+               total_deadline_at: absolute,
+               on_response_status: fn fact -> send(owner, {:http_fact, fact}) end,
+               max_retries: 0
+             )
+
+    assert_receive :lmstudio_wire_opened
+    assert_receive {:http_fact, %{status: 200}}
+    error = assert_raise ReqLLM.Error.API.Stream, fn -> ReqLLM.StreamResponse.text(response) end
+    assert %ReqLLM.Error.API.Timeout{kind: :total} = error.cause
+    assert {:error, :closed} = Task.await(server, 2_000)
+  end
+
   defp http_server(status, content_type, body) do
     {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_ip, port}} = :inet.sockname(listener)

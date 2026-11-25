@@ -6,7 +6,13 @@ defmodule ReqLLM.TimeoutBudget do
   @capture_key :req_llm_timeout_capture
 
   @type budget_timeout :: pos_integer() | :infinity
-  @type deadline :: :infinity | %{timeout: pos_integer(), expires_at: integer()}
+  @type deadline ::
+          :infinity
+          | %{
+              required(:timeout) => pos_integer(),
+              required(:expires_at) => integer(),
+              optional(:clock) => {module(), term()}
+            }
 
   @spec total_timeout(keyword()) :: budget_timeout()
   def total_timeout(opts) do

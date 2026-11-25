@@ -107,7 +107,10 @@ defmodule ReqLLM.Streaming.FinchClient do
   def build_stream_request(provider_mod, model, context, opts, finch_name) do
     alias ReqLLM.Streaming.Fixtures
 
-    with {:ok, finch_request} <- provider_mod.attach_stream(model, context, opts, finch_name),
+    provider_opts = Keyword.delete(opts, :total_timeout_deadline)
+
+    with {:ok, finch_request} <-
+           provider_mod.attach_stream(model, context, provider_opts, finch_name),
          finch_request <- transform_request(finch_request, opts),
          finch_request <- configure_connection_pool(finch_request, opts, finch_name),
          :ok <- validate_http2_body_size(finch_request, finch_name) do
