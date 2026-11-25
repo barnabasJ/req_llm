@@ -235,7 +235,7 @@ defmodule ReqLLM.OpenAIPricingContextTest do
         handler_id,
         [:req_llm, :token_usage],
         fn _event, measurements, metadata, _config ->
-          if metadata.request_id == request_id do
+          if Map.get(metadata, :request_id) == request_id do
             send(pid, {:physical_usage, measurements})
           end
         end,
@@ -243,6 +243,7 @@ defmodule ReqLLM.OpenAIPricingContextTest do
       )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
+    :telemetry.execute([:req_llm, :token_usage], %{}, %{provider: :foreign_request})
     assert :ok = StreamServer.set_telemetry_context(server, telemetry)
 
     send_event(server, %{
