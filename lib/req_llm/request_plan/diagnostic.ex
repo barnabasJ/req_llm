@@ -18,7 +18,8 @@ defmodule ReqLLM.RequestPlan.Diagnostic do
     :on_finch_request,
     :on_response_status,
     :req_http_options,
-    :text
+    :text,
+    :total_timeout_deadline
   ]
 
   @sensitive_option_names ~w(authorization cookie credential header headers password secret token)

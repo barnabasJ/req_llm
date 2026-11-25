@@ -3,6 +3,33 @@ defmodule ReqLLM.RequestBudgetTest do
   @moduletag category: :core
   alias ReqLLM.TestSupport.RequestBudgetClock, as: Clock
 
+  defmodule BoundaryProvider do
+    def stream_transport(_model, opts) do
+      send(opts[:test_pid], {:callback_options, :transport, opts})
+      opts[:test_transport]
+    end
+
+    def stream_protocol_parser(_model, opts) do
+      send(opts[:test_pid], {:callback_options, :parser, opts})
+      nil
+    end
+
+    def attach_stream(_model, _context, opts, _finch) do
+      send(opts[:test_pid], {:callback_options, :http, opts})
+      {:error, :boundary_checked}
+    end
+
+    def attach_websocket_stream(_model, _context, opts) do
+      send(opts[:test_pid], {:callback_options, :websocket, opts})
+      {:error, :boundary_checked}
+    end
+
+    def attach_in_process_stream(_model, _context, opts) do
+      send(opts[:test_pid], {:callback_options, :in_process, opts})
+      {:error, :boundary_checked}
+    end
+  end
+
   setup do
     {:ok, clock} = Clock.start()
     %{clock: clock, deadline: Clock.deadline(clock)}
@@ -721,6 +748,51 @@ defmodule ReqLLM.RequestBudgetTest do
       assert Process.alive?(caller)
       send(caller, :finish)
     end
+  end
+
+  test "all streaming provider callbacks receive public options without the transport deadline" do
+    model = ReqLLM.model!(%{provider: :openai, id: "synthetic"})
+    context = ReqLLM.Context.new([ReqLLM.Context.user("synthetic")])
+
+    for transport <- [:http, :websocket, :in_process] do
+      absolute = System.system_time(:millisecond) + 5_000
+
+      assert {:error, _} =
+               ReqLLM.Streaming.start_stream(BoundaryProvider, model, context,
+                 test_pid: self(),
+                 test_transport: transport,
+                 total_timeout: 5_000,
+                 total_deadline_at: absolute
+               )
+
+      callbacks =
+        if transport == :websocket,
+          do: [:transport, transport],
+          else: [:transport, :parser, transport]
+
+      for callback <- callbacks do
+        assert_receive {:callback_options, ^callback, opts}
+        refute Keyword.has_key?(opts, :total_timeout_deadline)
+        assert opts[:total_deadline_at] == absolute
+        assert opts[:total_timeout] == 5_000
+      end
+    end
+  end
+
+  test "telemetry and diagnostics omit the internal transport deadline", ctx do
+    model =
+      ReqLLM.model!(%{
+        provider: :openai,
+        id: "synthetic",
+        extra: %{"wire" => %{"protocol" => "openai_chat"}}
+      })
+
+    opts = [total_timeout_deadline: ctx.deadline, total_deadline_at: 10_000, total_timeout: 100]
+    context = ReqLLM.Telemetry.new_context(model, opts, mode: :stream)
+    refute Keyword.has_key?(context.original_opts, :total_timeout_deadline)
+    assert context.original_opts[:total_deadline_at] == 10_000
+    assert {:ok, diagnostic} = ReqLLM.RequestPlan.Diagnostic.build(model, :chat, opts)
+    refute Jason.encode!(diagnostic) =~ "total_timeout_deadline"
   end
 
   defp stream(ctx, wire, opts) do

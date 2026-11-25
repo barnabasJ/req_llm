@@ -96,6 +96,9 @@ defmodule ReqLLM.TimeoutBudget do
   end
 
   @doc false
+  def without_transport_deadline(opts), do: Keyword.delete(opts, :total_timeout_deadline)
+
+  @doc false
   def request_deadline(request),
     do: Req.Request.get_private(request, :req_llm_timeout_deadline, :infinity)
 

@@ -107,7 +107,7 @@ defmodule ReqLLM.Streaming.FinchClient do
   def build_stream_request(provider_mod, model, context, opts, finch_name) do
     alias ReqLLM.Streaming.Fixtures
 
-    provider_opts = Keyword.delete(opts, :total_timeout_deadline)
+    provider_opts = ReqLLM.TimeoutBudget.without_transport_deadline(opts)
 
     with {:ok, finch_request} <-
            provider_mod.attach_stream(model, context, provider_opts, finch_name),

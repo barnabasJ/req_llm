@@ -24,8 +24,11 @@ defmodule ReqLLM.Streaming.InProcessClient do
   @spec start_stream(module(), LLMDB.Model.t(), ReqLLM.Context.t(), keyword(), pid(), term()) ::
           {:ok, pid(), (-> any()) | nil} | {:error, term()}
   def start_stream(provider_mod, model, context, opts, stream_server_pid, task_supervisor) do
+    provider_opts = ReqLLM.TimeoutBudget.without_transport_deadline(opts)
+
     with :ok <- validate_callback(provider_mod),
-         {:ok, stream_result} <- provider_mod.attach_in_process_stream(model, context, opts),
+         {:ok, stream_result} <-
+           provider_mod.attach_in_process_stream(model, context, provider_opts),
          {:ok, stream, cancel} <- normalize_stream(stream_result) do
       start_streaming_task(stream, stream_server_pid, task_supervisor, cancel)
     else

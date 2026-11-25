@@ -189,6 +189,7 @@ defmodule ReqLLM.Telemetry do
   """
   @spec new_context(LLMDB.Model.t(), keyword(), keyword()) :: context()
   def new_context(%LLMDB.Model{} = model, opts, extra \\ []) do
+    opts = ReqLLM.TimeoutBudget.without_transport_deadline(opts)
     operation = Keyword.get(extra, :operation, Keyword.get(opts, :operation, :chat))
     mode = Keyword.get(extra, :mode, :sync)
     transport = Keyword.get(extra, :transport, :req)

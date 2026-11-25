@@ -41,8 +41,10 @@ defmodule ReqLLM.Streaming.WebSocketClient do
   end
 
   defp build_stream_request(provider_mod, model, context, opts) do
+    provider_opts = ReqLLM.TimeoutBudget.without_transport_deadline(opts)
+
     with true <- function_exported?(provider_mod, :attach_websocket_stream, 3),
-         {:ok, config} <- provider_mod.attach_websocket_stream(model, context, opts) do
+         {:ok, config} <- provider_mod.attach_websocket_stream(model, context, provider_opts) do
       http_context =
         Map.get_lazy(config, :http_context, fn ->
           HTTPContext.new(config.url, :get, Map.new(config.headers || []))

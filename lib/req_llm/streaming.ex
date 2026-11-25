@@ -360,7 +360,7 @@ defmodule ReqLLM.Streaming do
 
   defp stream_transport(provider_mod, model, opts) do
     if function_exported?(provider_mod, :stream_transport, 2) do
-      provider_mod.stream_transport(model, opts)
+      provider_mod.stream_transport(model, ReqLLM.TimeoutBudget.without_transport_deadline(opts))
     else
       :http
     end
@@ -368,7 +368,10 @@ defmodule ReqLLM.Streaming do
 
   defp provider_protocol_parser(provider_mod, model, opts) do
     if function_exported?(provider_mod, :stream_protocol_parser, 2) do
-      provider_mod.stream_protocol_parser(model, opts)
+      provider_mod.stream_protocol_parser(
+        model,
+        ReqLLM.TimeoutBudget.without_transport_deadline(opts)
+      )
     end
   end
 
