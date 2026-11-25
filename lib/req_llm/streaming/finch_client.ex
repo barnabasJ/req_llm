@@ -343,12 +343,44 @@ defmodule ReqLLM.Streaming.FinchClient do
       end
 
     case ReqLLM.TimeoutBudget.clamp_options(opts, deadline) do
-      {:ok, bounded_opts} ->
-        Finch.stream(%{request | private: private}, finch_name, acc, callback, bounded_opts)
+      {:ok, bounded_opts, total_bound_waits} ->
+        bounded_stream(
+          %{request | private: private},
+          finch_name,
+          acc,
+          callback,
+          bounded_opts,
+          deadline,
+          total_bound_waits
+        )
 
       {:error, reason} ->
         {:error, reason, acc}
     end
+  end
+
+  defp bounded_stream(request, finch_name, acc, callback, opts, deadline, total_bound_waits) do
+    case Finch.stream(request, finch_name, acc, callback, opts) do
+      {:error, reason, returned_acc} ->
+        {:error,
+         ReqLLM.TimeoutBudget.normalize_transport_timeout(reason, deadline, total_bound_waits),
+         returned_acc}
+
+      result ->
+        result
+    end
+  rescue
+    exception in RuntimeError ->
+      if ReqLLM.Transport.pool_checkout_timeout?(__STACKTRACE__) do
+        case ReqLLM.TimeoutBudget.total_timeout_for_wait(deadline, total_bound_waits, [
+               :pool_timeout
+             ]) do
+          nil -> reraise exception, __STACKTRACE__
+          timeout -> {:error, timeout, acc}
+        end
+      else
+        reraise exception, __STACKTRACE__
+      end
   end
 
   defp ensure_connection_pool(finch_name, pool, pool_options) do

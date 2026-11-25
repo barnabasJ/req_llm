@@ -86,7 +86,8 @@ defmodule ReqLLM.Streaming.Retry do
     started_at = System.monotonic_time()
 
     case ReqLLM.TimeoutBudget.clamp_options(stream_opts, params.deadline) do
-      {:ok, bounded_opts} ->
+      {:ok, bounded_opts, total_bound_waits} ->
+        params = Map.put(params, :total_bound_waits, total_bound_waits)
         run_wire_attempt(params, attempt, initial_acc, wrapped_callback, bounded_opts, started_at)
 
       {:error, reason} ->
@@ -107,7 +108,11 @@ defmodule ReqLLM.Streaming.Retry do
          stream_opts,
          started_at
        ) do
-    case stream_fun.(request, finch_name, initial_acc, wrapped_callback, stream_opts) do
+    result =
+      stream_fun.(request, finch_name, initial_acc, wrapped_callback, stream_opts)
+      |> normalize_wire_timeout(params)
+
+    case result do
       {:ok, %{status: status} = state} when is_integer(status) and status >= 400 ->
         handle_http_failure(params, attempt, :rate_limited, state, started_at)
 
@@ -126,6 +131,20 @@ defmodule ReqLLM.Streaming.Retry do
         {:error, reason, callback_acc}
     end
   end
+
+  defp normalize_wire_timeout({:error, reason, %{status: status} = state}, _params)
+       when is_integer(status) and status >= 400, do: {:error, reason, state}
+
+  defp normalize_wire_timeout({:error, reason, state}, params) do
+    {:error,
+     ReqLLM.TimeoutBudget.normalize_transport_timeout(
+       reason,
+       params.deadline,
+       params.total_bound_waits
+     ), state}
+  end
+
+  defp normalize_wire_timeout(result, _params), do: result
 
   defp handle_http_failure(
          %{max_retries: max_retries} = params,

@@ -131,7 +131,7 @@ defmodule ReqLLM.RequestBudgetTest do
         {request, %Req.TransportError{reason: :timeout}}
       end)
 
-    assert {:error, %Req.TransportError{reason: :timeout}} = Req.request(request)
+    assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 100}} = Req.request(request)
 
     assert Enum.map(Clock.state(ctx.clock).calls, fn {time, options} ->
              assert options[:receive_timeout] == options[:pool_timeout]
@@ -793,6 +793,108 @@ defmodule ReqLLM.RequestBudgetTest do
     assert context.original_opts[:total_deadline_at] == 10_000
     assert {:ok, diagnostic} = ReqLLM.RequestPlan.Diagnostic.build(model, :chat, opts)
     refute Jason.encode!(diagnostic) =~ "total_timeout_deadline"
+  end
+
+  for {pool_timeout, expected} <- [{1_000, :total}, {10, :pool}] do
+    @pool_timeout pool_timeout
+    @expected expected
+    test "pool timeout retains the effective wait origin: #{@expected}", ctx do
+      adapter = fn _request ->
+        Clock.advance(ctx.clock, 100)
+
+        :erlang.raise(:error, RuntimeError.exception("synthetic pool timeout"), [
+          {NimblePool, :exit!, 3, []},
+          {Finch.HTTP1.Pool, :request, 6, []}
+        ])
+      end
+
+      req =
+        request(ctx, adapter) |> Req.Request.merge_options(finch: [pool_timeout: @pool_timeout])
+
+      result = Req.request(req)
+
+      if @expected == :total do
+        assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 100}} = result
+      else
+        assert {:error,
+                %ReqLLM.Error.API.Request{cause: %RuntimeError{message: "synthetic pool timeout"}}} =
+                 result
+      end
+    end
+  end
+
+  for {receive_timeout, expected} <- [{1_000, :total}, {10, :receive}] do
+    @receive_timeout receive_timeout
+    @expected expected
+    test "buffered inactivity timeout retains the effective wait origin: #{@expected}", ctx do
+      original = %Req.TransportError{reason: :timeout}
+
+      adapter = fn request ->
+        Clock.advance(ctx.clock, 100)
+        {request, original}
+      end
+
+      req =
+        request(ctx, adapter)
+        |> Req.Request.merge_options(receive_timeout: @receive_timeout, max_retries: 0)
+
+      result = Req.request(req)
+
+      if @expected == :total do
+        assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 100}} = result
+      else
+        assert result == {:error, original}
+      end
+    end
+
+    test "streaming inactivity timeout retains the effective wait origin: #{@expected}", ctx do
+      original = %Req.TransportError{reason: :timeout}
+
+      wire = fn _, _, acc, _, _ ->
+        Clock.advance(ctx.clock, 100)
+        {:error, original, acc}
+      end
+
+      result = stream(ctx, wire, receive_timeout: @receive_timeout, max_retries: 0)
+
+      if @expected == :total do
+        assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 100}, []} = result
+      else
+        assert result == {:error, original, []}
+      end
+    end
+  end
+
+  test "expiry does not relabel unrelated adapter failures or provider responses", ctx do
+    provider_error =
+      ReqLLM.Error.API.Request.exception(status: 503, reason: "synthetic provider failure")
+
+    req =
+      request(ctx, fn request ->
+        Clock.advance(ctx.clock, 100)
+        {request, provider_error}
+      end)
+      |> Req.Request.merge_options(max_retries: 0)
+
+    assert Req.request(req) == {:error, provider_error}
+    Clock.advance(ctx.clock, -100)
+
+    wire = fn _, _, acc, _, _ ->
+      Clock.advance(ctx.clock, 100)
+      {:error, provider_error, acc}
+    end
+
+    assert stream(ctx, wire, max_retries: 0) == {:error, provider_error, []}
+  end
+
+  test "expiry does not relabel an unrelated adapter exception", ctx do
+    req =
+      request(ctx, fn _request ->
+        Clock.advance(ctx.clock, 100)
+        raise "synthetic unrelated adapter exception"
+      end)
+
+    assert_raise RuntimeError, "synthetic unrelated adapter exception", fn -> Req.request(req) end
   end
 
   defp stream(ctx, wire, opts) do

@@ -61,7 +61,7 @@ defmodule ReqLLM.Transport do
       |> Keyword.merge(Keyword.take(finch_options, timeout_keys))
 
     case ReqLLM.TimeoutBudget.clamp_options(options, deadline) do
-      {:ok, options} ->
+      {:ok, options, total_bound_waits} ->
         bounded = Keyword.take(options, timeout_keys)
         request = Req.Request.merge_options(request, options)
 
@@ -71,38 +71,45 @@ defmodule ReqLLM.Transport do
             ReqLLM.Provider.Defaults.finch_option(request, bounded)
           )
 
-        run_adapter(request)
+        {request, result} = run_adapter(request, deadline, total_bound_waits)
+
+        {request,
+         ReqLLM.TimeoutBudget.normalize_transport_timeout(result, deadline, total_bound_waits)}
 
       {:error, reason} ->
         {request, reason}
     end
   end
 
-  defp run_adapter(request) do
+  defp run_adapter(request, deadline \\ :infinity, total_bound_waits \\ []) do
     case Req.Request.get_private(request, @adapter_key) do
       adapter when is_function(adapter, 1) -> adapter.(request)
       adapter when is_atom(adapter) -> adapter.run(request)
     end
   rescue
     exception in RuntimeError ->
-      if finch_pool_timeout?(__STACKTRACE__) do
-        {request,
-         ReqLLM.Error.API.Request.exception(
-           reason: Exception.message(exception),
-           request_body: request.body,
-           cause: exception
-         )}
+      if pool_checkout_timeout?(__STACKTRACE__) do
+        error =
+          ReqLLM.TimeoutBudget.total_timeout_for_wait(deadline, total_bound_waits, [:pool_timeout]) ||
+            ReqLLM.Error.API.Request.exception(
+              reason: Exception.message(exception),
+              request_body: request.body,
+              cause: exception
+            )
+
+        {request, error}
       else
         reraise exception, __STACKTRACE__
       end
   end
 
-  defp finch_pool_timeout?([{NimblePool, :exit!, 3, _} | stacktrace]) do
+  @doc false
+  def pool_checkout_timeout?([{NimblePool, :exit!, 3, _} | stacktrace]) do
     Enum.any?(stacktrace, fn
       {Finch.HTTP1.Pool, :request, 6, _} -> true
       _ -> false
     end)
   end
 
-  defp finch_pool_timeout?(_stacktrace), do: false
+  def pool_checkout_timeout?(_stacktrace), do: false
 end

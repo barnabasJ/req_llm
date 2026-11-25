@@ -174,6 +174,37 @@ defmodule ReqLLM.TransportTest do
     assert {:ok, _} = Task.await(holder, 2_000)
   end
 
+  test "streaming pool checkout clamped to the deadline reports the typed total timeout" do
+    url = start_server()
+    start_pool()
+    holder = Task.async(fn -> generate_text(url, @finch, "holder") end)
+    assert_receive {:provider_call, connection, "holder"}, 2_000
+    model = ReqLLM.model!(%{provider: :openai, id: "synthetic"})
+
+    {:ok, server} =
+      ReqLLM.StreamServer.start_link(provider_mod: ReqLLM.Providers.OpenAI, model: model)
+
+    request = Finch.build(:post, url, [], Jason.encode!(%{model: "synthetic"}))
+    deadline = TimeoutBudget.deadline(total_timeout: 50)
+
+    assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 50}} =
+             ReqLLM.Streaming.FinchClient.run_stream(request, server, @finch,
+               total_timeout_deadline: deadline,
+               pool_timeout: 1_000,
+               receive_timeout: 1_000,
+               request_timeout: 1_000,
+               max_retries: 0
+             )
+
+    assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 50}} =
+             ReqLLM.StreamServer.next(server)
+
+    refute_received {:provider_call, _, _}
+    send(connection, :reply)
+    assert {:ok, _} = Task.await(holder, 2_000)
+    ReqLLM.StreamServer.cancel(server)
+  end
+
   defp start_server do
     server =
       start_supervised!({Bandit, plug: {CompletionPlug, self()}, port: 0, startup_log: false})

@@ -58,7 +58,7 @@ defmodule ReqLLM.TimeoutBudget do
   end
 
   @doc false
-  def clamp_options(options, :infinity), do: {:ok, options}
+  def clamp_options(options, :infinity), do: {:ok, options, []}
 
   def clamp_options(options, deadline) do
     case remaining(deadline) do
@@ -66,12 +66,52 @@ defmodule ReqLLM.TimeoutBudget do
         {:error, error(:total, deadline.timeout)}
 
       budget ->
-        {:ok,
-         Enum.reduce([:pool_timeout, :receive_timeout, :request_timeout], options, fn key, opts ->
-           Keyword.update(opts, key, budget, &clamp_timeout(&1, budget))
-         end)}
+        keys = [:pool_timeout, :receive_timeout, :request_timeout]
+
+        total_bound_waits =
+          Enum.filter(keys, &bounded_by_total?(Keyword.get(options, &1, :infinity), budget))
+
+        bounded =
+          Enum.reduce(keys, options, fn key, opts ->
+            Keyword.update(opts, key, budget, &clamp_timeout(&1, budget))
+          end)
+
+        {:ok, bounded, total_bound_waits}
     end
   end
+
+  @doc false
+  def total_timeout_for_wait(:infinity, _total_bound_waits, _waits), do: nil
+
+  def total_timeout_for_wait(deadline, total_bound_waits, waits) do
+    if Enum.all?(waits, &(&1 in total_bound_waits)) and remaining(deadline) == 0,
+      do: error(:total, deadline.timeout)
+  end
+
+  @doc false
+  def normalize_transport_timeout(
+        %{__struct__: module, reason: :timeout} = reason,
+        deadline,
+        total_bound_waits
+      )
+      when module in [Req.TransportError, Mint.TransportError, Finch.TransportError, Finch.Error] do
+    total_timeout_for_wait(deadline, total_bound_waits, [:receive_timeout, :request_timeout]) ||
+      reason
+  end
+
+  def normalize_transport_timeout(
+        %Finch.Error{reason: :request_timeout} = reason,
+        deadline,
+        total_bound_waits
+      ) do
+    total_timeout_for_wait(deadline, total_bound_waits, [:request_timeout]) || reason
+  end
+
+  def normalize_transport_timeout(reason, _deadline, _total_bound_waits), do: reason
+
+  defp bounded_by_total?(:infinity, _budget), do: true
+  defp bounded_by_total?(timeout, budget) when is_integer(timeout), do: timeout >= budget
+  defp bounded_by_total?(_timeout, _budget), do: false
 
   @doc false
   def retry_delay(:infinity, delay), do: {:ok, delay}
